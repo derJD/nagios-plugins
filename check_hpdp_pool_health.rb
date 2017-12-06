@@ -7,7 +7,7 @@
 # a pool and their condition.
 # ----------------------------------------------------
 #
-# Version: 0.1.0
+# Version: 0.1.1
 # License: GPL
 # Author: Jean-Denis Gebhardt <jd@der-jd.de>
 #
@@ -45,9 +45,31 @@ class Pool
     self.name    = name
   end
 
-  def self.add_freepool(pool = {})
-    unless pool[:freepool] == "None"
-      fp   = Pool.detail(pool[:freepool]) unless pool[:freepool] == "None"
+  def all_pools
+    @pools   = {}
+    @lines   = `/opt/omni/bin/omnimm -show_pool -detail`.split("\n")
+
+    @lines.each do |line|
+      if line.match(/Pool name/)
+        @pool = line.match(/.*: (.+)\s\t\s/)[1] if line.match(/Pool name/)
+        @details = {}
+      end
+
+      @details[:policy]    = line.match(/.*: (.+)\s+$/)[1].sub(/\s+$/, '') if line.match(/Policy/)
+      @details[:used]      = line.match(/.*: (\S+)/)[1].to_i if line.match(/Blocks used/)
+      @details[:size]      = line.match(/.*: (\S+)/)[1].to_i if line.match(/Blocks total/)
+      @details[:age]       = line.match(/.*: (.+)\t\s+/)[1] if line.match(/Medium age limit/)
+      @details[:overrides] = line.match(/.*: (\S+)/)[1] if line.match(/Maximum overwrites/)
+      @details[:magazine]  = line.match(/.*: (\S+)/)[1] if line.match(/Magazine support/)
+      @details[:freepool]  = line.match(/Uses free pool/)? line.match(/.*:.*\((.*)\).*/)[1] : "None" if line.match(/Free pool support/)
+      @pools[@pool] =  @details if @pool
+    end
+
+    return @pools
+  end
+
+  def self.add_freepool(pool = {}, details = {})
+      fp   = Pool.detail(pool[:freepool], details)
       pool[:appendable] += fp[:appendable]
       pool[:media]      += fp[:media]
       pool[:free]       += fp[:free]
@@ -58,26 +80,13 @@ class Pool
       pool[:size]       += fp[:size]
       pool[:used]       += fp[:used]
       pool[:labels]     += fp[:labels]
-    end
 
     return pool
   end
 
-  def self.detail(pool = @name)
+  def self.detail(pool = @name, details = {})
     return "no pool selected" if pool.nil? || pool.empty?
-    @details = self.list(pool)["#{ pool }"]
-
-    @lines = `/opt/omni/bin/omnimm -show_pool "#{ pool }" -detail`.split("\n")
-    @lines.each do |line|
-      @details[:policy]    = line.match(/.*: (.+)\s+$/)[1].sub(/\s+$/, '') if line.match(/Policy/)
-      @details[:used]      = line.match(/.*: (\S+)/)[1].to_i if line.match(/Blocks used/)
-      @details[:size]      = line.match(/.*: (\S+)/)[1].to_i if line.match(/Blocks total/)
-      @details[:age]       = line.match(/.*: (.+)\t\s+/)[1] if line.match(/Medium age limit/)
-      @details[:overrides] = line.match(/.*: (\S+)/)[1] if line.match(/Maximum overwrites/)
-      @details[:magazine]  = line.match(/.*: (\S+)/)[1] if line.match(/Magazine support/)
-      @details[:freepool]  = line.match(/.*: (\S+)/)[1] if line.match(/Free pool support.+None/)
-      @details[:freepool]  = line.match(/.*\((.*)\).*|.*(None).*/)[1] if line.match(/Free pool support.+\(/)
-    end
+    @details = self.list(pool)["#{ pool }"].merge!(details)
 
     @lines = `/opt/omni/bin/omnirpt -report media_list -tab -pool #{ pool.inspect }`.split("\n")
     @lines.each do |line|
@@ -112,15 +121,16 @@ class Pool
   end
 end
 
-match = `/opt/omni/bin/omnimm -show_pool | /bin/awk '$0 ~ /#{ options[:pool] }/ {print $2}'`.split
+match = `/opt/omni/bin/omnirpt -report pool_list -tab | /bin/awk -F "\t" '$1 ~ /#{ options[:pool] }/ {print $1}'`.split
 if match.empty?
   puts "No Pool found matching #{ options[:pool] }!"
   exit 1
 end
 
+pools = Pool.new.all_pools
 match.each do |p|
-  pool = Pool.detail(p)
-  pool = Pool.add_freepool(pool) unless pool[:freepool] == "None"
+  pool = Pool.detail(p, pools[p])
+  pool = Pool.add_freepool(pool, pools[pool[:freepool]]) unless pool[:freepool] == "None"
 
   case
     when (pool[:free] + pool[:appendable]) <= options[:critical] then
